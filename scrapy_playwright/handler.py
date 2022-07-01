@@ -241,6 +241,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
             return deferred_from_coro(self._download_request(request, spider))
         return super().download_request(request, spider)
 
+
     async def _download_request(self, request: Request, spider: Spider) -> Response:
         page = request.meta.get("playwright_page")
         if not isinstance(page, Page):
@@ -260,14 +261,16 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
                         f" ignoring handler for event '{event}'"
                     )
 
+
         await page.unroute("**")
         await page.route(
             "**",
             self._make_request_handler(
                 method=request.method,
                 scrapy_headers=request.headers,
+                spider = spider,
                 body=request.body,
-                encoding=getattr(request, "encoding", None),
+                encoding=getattr(request, "encoding", None)
             ),
         )
 
@@ -289,6 +292,7 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
 
         start_time = time()
         response = await page.goto(request.url)
+        
         await self._apply_page_methods(page, request)
         body_str = await page.content()
         request.meta["download_latency"] = time() - start_time
@@ -300,7 +304,10 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         server_ip_address = None
         with suppress(AttributeError, KeyError, ValueError):
             server_addr = await response.server_addr()
-            server_ip_address = ip_address(server_addr["ipAddress"])
+            try:
+                server_ip_address = ip_address(server_addr["ipAddress"])
+            except:
+                pass
 
         with suppress(AttributeError):
             request.meta["playwright_security_details"] = await response.security_details()
@@ -377,17 +384,24 @@ class ScrapyPlaywrightDownloadHandler(HTTPDownloadHandler):
         return close_browser_context_callback
 
     def _make_request_handler(
-        self, method: str, scrapy_headers: Headers, body: Optional[bytes], encoding: str = "utf8"
+        self, method: str, scrapy_headers: Headers, spider: Spider, body: Optional[bytes], encoding: str = "utf8"
     ) -> Callable:
         async def _request_handler(route: Route, playwright_request: PlaywrightRequest) -> None:
             """Override request headers, method and body."""
-            if self.abort_request:
-                should_abort = await _maybe_await(self.abort_request(playwright_request))
-                if should_abort:
+            spider_abort = 'abort_playwright_request' in dir(spider)
+            if self.abort_request or spider_abort:
+                if spider_abort:
+                    should_abort = await _maybe_await(spider.abort_playwright_request(playwright_request))
+                else:
+                    should_abort = await _maybe_await(self.abort_request(playwright_request))
+                if should_abort == True:
                     await route.abort()
                     self.stats.inc_value("playwright/request_count/aborted")
                     return None
-
+                if type(should_abort) == int:
+                    await route.fulfill(status=should_abort)
+                    return None
+                    
             overrides: dict = {}
 
             if self.process_request_headers is None:
